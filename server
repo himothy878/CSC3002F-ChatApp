@@ -1,0 +1,49 @@
+import socket
+import threading
+
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+print("Socket successfully created")
+
+port = 12345
+host = '127.0.0.1'
+
+s.bind((host, port))
+## print("socket binded to %s" %(port))
+
+
+s.listen()
+#print("socket is listening")
+clients = []
+aliases = []
+def broadcast(message):
+    for client in clients:
+        client.send(message)
+
+def handle_client(client):
+    while True:
+        try:
+            message = client.recv(1024)
+            broadcast(message)
+        except:
+            index=clients.index(client)
+            clients.remove(client)
+            client.close()
+            alias=aliases[index]       
+            broadcast(f'{alias} left the chat!'.encode())
+            aliases.remove(alias)
+            break
+        #function to receive client connections
+def receive():
+ while True:
+    print("Waiting for connections...")
+    client, addr = s.accept()
+    print(f'Connection from {addr} has been established!')
+    print('Got connection from', addr)
+    message = 'Thank you for connecting'
+    client.send(message.encode())
+    alias = client.recv(1024)
+    aliases.append(alias)
+    clients.append(client)
+    print(f'The alias of this client is {alias.decode("utf-8")}')
+    client.send('You are now connected!'.encode())
+    threading.Thread(target=handle_client, args=(client,)).start()
