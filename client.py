@@ -1,11 +1,10 @@
-# client.py (Integrated by Person C)
+# client.py
 import socket
 import threading
-import time
 
 SERVER_HOST = '127.0.0.1'
 SERVER_PORT = 5000
-UDP_PORT = 5001 # Fixed UDP broadcast port for prototype
+UDP_PORT = 5555 # Changed to 5555 to avoid WinError 10013
 
 class ChatClient:
     def __init__(self, alias):
@@ -17,19 +16,13 @@ class ChatClient:
         # 2. UDP Socket (Person B)
         self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        # 2. UDP Socket (Person B)
-        self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        
-        # Add this line right here to allow multiple clients on the same machine!
+        # FIX: Allow multiple clients on the same machine to share the UDP port
         self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1) 
-        
-        self.udp_sock.bind(('', UDP_PORT)) # Listen for UDP on 5001
-        self.udp_sock.bind(('', UDP_PORT)) # Listen for UDP on 5001
+        self.udp_sock.bind(('', UDP_PORT)) 
         
         # 3. P2P TCP Listener Socket (Person C)
         self.p2p_listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.p2p_listener.bind(('', 0)) # Bind to any available port
+        self.p2p_listener.bind(('', 0)) # Bind to any available ephemeral port
         self.p2p_port = self.p2p_listener.getsockname()[1]
         self.p2p_listener.listen()
 
@@ -43,7 +36,7 @@ class ChatClient:
 
         print(f"Connected! Your P2P port is {self.p2p_port}")
 
-        # Start all listening threads (Integration!)
+        # Start all listening threads
         threading.Thread(target=self.listen_tcp_server, daemon=True).start()
         threading.Thread(target=self.listen_udp, daemon=True).start()
         threading.Thread(target=self.listen_p2p, daemon=True).start()
@@ -55,6 +48,8 @@ class ChatClient:
         while True:
             try:
                 msg = self.tcp_sock.recv(4096).decode('utf-8')
+                if not msg:
+                    break
                 if "CMD FILE_AUTH" in msg:
                     # Server gave us the P2P IP:Port! Let's send the file.
                     body = msg.split("\r\n\r\n")[1]
@@ -63,14 +58,19 @@ class ChatClient:
                 elif "DATA MESSAGE" in msg:
                     body = msg.split("\r\n\r\n")[1]
                     print(f"\n[CHAT] {body}")
-            except:
+            except Exception as e:
+                print(f"TCP Listen Error: {e}")
                 break
 
     # --- PERSON B: UDP PRESENCE & TYPING ---
     def listen_udp(self):
         while True:
-            data, addr = self.udp_sock.recvfrom(1024)
-            print(f"\n[UDP PRESENCE] {data.decode('utf-8')}")
+            try:
+                data, addr = self.udp_sock.recvfrom(1024)
+                print(f"\n[UDP PRESENCE] {data.decode('utf-8')}")
+            except Exception as e:
+                print(f"UDP Listen Error: {e}")
+                break
 
     def send_udp_presence(self, status):
         msg = f"DATA PRESENCE CCP/1.0\r\nFrom: {self.alias}\r\n\r\n{status}"
@@ -79,16 +79,20 @@ class ChatClient:
     # --- PERSON C: P2P FILE TRANSFER ---
     def listen_p2p(self):
         while True:
-            conn, addr = self.p2p_listener.accept()
-            print(f"\n[P2P] Incoming connection from {addr}...")
-            # Receive the file in chunks (as per Stage 1 spec)
-            with open(f"received_by_{self.alias}.txt", "wb") as f:
-                while True:
-                    chunk = conn.recv(4096)
-                    if not chunk: break
-                    f.write(chunk)
-            print("[P2P] File received successfully!")
-            conn.close()
+            try:
+                conn, addr = self.p2p_listener.accept()
+                print(f"\n[P2P] Incoming connection from {addr}...")
+                # Receive the file in chunks
+                with open(f"received_by_{self.alias}.txt", "wb") as f:
+                    while True:
+                        chunk = conn.recv(4096)
+                        if not chunk: break
+                        f.write(chunk)
+                print("[P2P] File received successfully!")
+                conn.close()
+            except Exception as e:
+                print(f"P2P Listen Error: {e}")
+                break
 
     def request_file_transfer(self, target_user):
         print(f"Requesting P2P connection to {target_user}...")
