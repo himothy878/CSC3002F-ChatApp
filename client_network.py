@@ -24,9 +24,9 @@ class ClientNetwork:
         self.running = False
         self.pending_file_path = None
 
-        # Callbacks wired by GUI
         self.on_users: Optional[Callable[[list], None]] = None
         self.on_groups: Optional[Callable[[list], None]] = None
+        self.on_group_members: Optional[Callable[[str, list], None]] = None
         self.on_ack: Optional[Callable[[str], None]] = None
         self.on_error: Optional[Callable[[str], None]] = None
         self.on_message: Optional[Callable[[Dict[str, str]], None]] = None
@@ -35,30 +35,25 @@ class ClientNetwork:
         self.on_udp: Optional[Callable[[str], None]] = None
         self.on_disconnect: Optional[Callable[[str], None]] = None
 
-    # =================== CONNECTION / LOGIN ===================
+    # ============== CONNECT / LOGIN ==============
     def connect(self, server_ip: str, alias: str, password: str) -> None:
         self.server_ip = server_ip.strip()
         self.alias = alias.strip()
-
         if not self.server_ip or not self.alias or not password:
             raise ValueError("Server IP, username and password are required")
 
-        # TCP
         self.tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.tcp.connect((self.server_ip, TCP_PORT))
 
-        # UDP
         self.udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.udp.bind(("0.0.0.0", 0))
         self.udp_port = self.udp.getsockname()[1]
 
-        # P2P file socket
         self.p2p = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.p2p.bind(("0.0.0.0", 0))
         self.p2p_port = self.p2p.getsockname()[1]
         self.p2p.listen()
 
-        # ---- LOGIN (CCP/1.0) ----
         body = password
         login_pkt = (
             f"CMD LOGIN CCP/1.0\r\n"
@@ -73,7 +68,6 @@ class ClientNetwork:
         if not resp or "ACK CCP/1.0" not in resp:
             raise RuntimeError("Authentication failed")
 
-        # ---- REGISTER UDP / P2P ----
         reg = build_response(
             "CMD REGISTER CCP/1.0",
             f"From: {self.alias}\r\nUDP-Port: {self.udp_port}\r\nP2P-Port: {self.p2p_port}\r\n",
@@ -94,11 +88,10 @@ class ClientNetwork:
             except Exception:
                 pass
 
-    # =================== COMMAND HELPERS ===================
+    # ============== COMMANDS ==============
     def request_lists(self):
         if not self.running:
             return
-
         self.tcp.sendall(
             build_response(
                 "CMD LIST_USERS CCP/1.0",
@@ -119,6 +112,12 @@ class ClientNetwork:
     def leave_group(self, group: str):
         self._send_ctrl("CMD LEAVE_GROUP CCP/1.0", to_value=group)
 
+    def list_group_members(self, group: str):
+        self._send_ctrl("CMD LIST_GROUP_MEMBERS CCP/1.0", to_value=group)
+
+    def add_user_to_group(self, username: str, group: str):
+        self._send_ctrl("CMD ADD_TO_GROUP CCP/1.0", to_value=username, body=group)
+
     def whois(self, user: str):
         self._send_ctrl("CMD WHOIS CCP/1.0", to_value=user)
 
@@ -135,7 +134,6 @@ class ClientNetwork:
     def send_chat(self, target: str, message: str, channel: str):
         if not self.running:
             return
-
         packet = build_response(
             "DATA MESSAGE CCP/1.0",
             (
@@ -148,7 +146,6 @@ class ClientNetwork:
             ),
         )
         self.tcp.sendall(packet.encode())
-        # TYPING via UDP, as in your protocol
         self.udp.sendto(f"TYPING {self.alias}".encode(), (self.server_ip, UDP_PORT))
         self.seq += 1
 
@@ -161,26 +158,18 @@ class ClientNetwork:
         self.tcp.sendall(build_response(cmd, payload).encode())
         self.seq += 1
 
-    # =================== CCP PARSING HELPERS ===================
+    # ============== PARSING HELPERS ==============
     def _extract_body(self, msg: str) -> str:
-        # Return CCP body (the second block, after outer Content-Length header)
-        if "\r\n\r\n" in msg:
-            return msg.split("\r\n\r\n", 1)[1]
-        return ""
+        return msg.split("\r\n\r\n", 1)[1] if "\r\n\r\n" in msg else ""
 
     def _parse_lines(self, body: str) -> list:
         values = [line.strip() for line in body.splitlines() if line.strip()]
         return [line for line in values if line.lower() != "(no groups)"]
 
     def _headers(self, msg: str) -> Dict[str, str]:
-        """Parse CCP headers from the *inner* block (body), not the outer HTTP-like header.
-
-        The server reads From/To/Channel from the body; we must do the same.
-        """
-        # Body is the CCP section that starts with 'Channel:/From:/To:' lines
+        # Parse CCP headers from inner block (Channel/From/To/Seq/Length)
         body = self._extract_body(msg)
-        header_part = body.split("\r\n\r\n", 1)[0]  # up to optional second blank line
-
+        header_part = body.split("\r\n\r\n", 1)[0]
         headers: Dict[str, str] = {}
         for line in header_part.split("\r\n"):
             if ":" in line:
@@ -188,7 +177,7 @@ class ClientNetwork:
                 headers[k.strip().lower()] = v.strip()
         return headers
 
-    # =================== LOOPS ===================
+    # ============== LOOPS ==============
     def _tcp_loop(self):
         try:
             while self.running:
@@ -196,7 +185,6 @@ class ClientNetwork:
                 if not msg:
                     continue
 
-                # Lists
                 if "CTRL USERS_LIST" in msg:
                     users = [u for u in self._parse_lines(self._extract_body(msg)) if u != self.alias]
                     if self.on_users:
@@ -209,7 +197,20 @@ class ClientNetwork:
                         self.on_groups(groups)
                     continue
 
-                # ACK / ERROR / WHOIS
+                if "CTRL GROUP_MEMBERS CCP/1.0" in msg:
+                    body = self._extract_body(msg)
+                    lines = [l for l in body.splitlines() if l.strip()]
+                    group = "?"
+                    members = []
+                    for i, line in enumerate(lines):
+                        if line.startswith("Group:"):
+                            group = line.split(":", 1)[1].strip()
+                            members = [x.strip() for x in lines[i + 1 :]]
+                            break
+                    if self.on_group_members:
+                        self.on_group_members(group, members)
+                    continue
+
                 if "CTRL ACK CCP/1.0" in msg:
                     if self.on_ack:
                         self.on_ack(self._extract_body(msg).strip())
@@ -225,7 +226,6 @@ class ClientNetwork:
                         self.on_whois(self._extract_body(msg).strip())
                     continue
 
-                # File request / auth
                 if "CTRL FILE_REQUEST" in msg:
                     headers = self._headers(msg)
                     sender = headers.get("from", "unknown")
@@ -243,21 +243,23 @@ class ClientNetwork:
                             self.on_error("File transfer canceled: local file missing.")
                     continue
 
-                # ---- DATA MESSAGE CCP/1.0 ----
                 if "DATA MESSAGE" in msg:
                     headers = self._headers(msg)
+                    body_full = self._extract_body(msg)
+                    if "\r\n\r\n" in body_full:
+                        body = body_full.split("\r\n\r\n", 1)[1]
+                    else:
+                        body = ""
                     payload = {
                         "channel": headers.get("channel", "PRIVATE"),
                         "from": headers.get("from", ""),
                         "to": headers.get("to", ""),
-                        # Body after inner CCP headers
-                        "body": self._extract_body(msg).split("\r\n\r\n", 1)[-1],
+                        "body": body,
                     }
                     if self.on_message:
                         self.on_message(payload)
                     continue
 
-                # Fallback: log anything else
                 if self.on_ack:
                     self.on_ack(msg.strip())
 
@@ -291,7 +293,6 @@ class ClientNetwork:
         except Exception:
             return
 
-    # =================== FILE SENDER ===================
     def _send_file_data(self, ip_target: str, port_target: int, path: str):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.connect((ip_target, port_target))

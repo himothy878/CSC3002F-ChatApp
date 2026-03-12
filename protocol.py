@@ -8,8 +8,8 @@ def receive_message(sock):
 
     header_part, body_part = data.split(b"\r\n\r\n", 1)
     headers = header_part.decode(errors="replace")
-    content_length = 0
 
+    content_length = 0
     for line in headers.split("\r\n"):
         lower = line.lower()
         if lower.startswith("content-length:") or lower.startswith("length:"):

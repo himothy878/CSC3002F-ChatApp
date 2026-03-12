@@ -1,7 +1,8 @@
 import queue
 import tkinter as tk
 from datetime import datetime
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
+
 from client_network import ClientNetwork
 
 
@@ -15,39 +16,45 @@ class ChatGUIApp:
         self.root.title("CCP Messenger")
         self.root.geometry("1040x680")
 
-        # ---- Networking (uses your CCP/1.0 protocol via ClientNetwork) ----
         self.network = ClientNetwork()
         self.network.on_users = lambda users: self.uiq.put(("users", users))
         self.network.on_groups = lambda groups: self.uiq.put(("groups", groups))
+        self.network.on_group_members = (
+            lambda group, members: self.uiq.put(("group_members", (group, members)))
+        )
         self.network.on_ack = lambda text: self.uiq.put(("log", text))
         self.network.on_error = lambda text: self.uiq.put(("error", text))
         self.network.on_whois = lambda text: self.uiq.put(("whois", text))
-        self.network.on_udp = lambda text: self.uiq.put(("log", f"[UDP] {text}"))
+
+        # UDP handler for typing + log
+        self.network.on_udp = self._handle_udp
+
         self.network.on_file_request = (
             lambda sender, name: self.uiq.put(("log", f"Incoming file request from {sender}: {name}"))
         )
         self.network.on_message = lambda payload: self.uiq.put(("message", payload))
         self.network.on_disconnect = lambda text: self.uiq.put(("error", text))
 
-        # ---- UI state ----
         self.uiq = queue.Queue()
         self.online_users = []
         self.joined_groups = []
         self.current_chat_target = None
         self.current_chat_is_group = False
-        self.chat_history = {}  # key -> [lines]
+        # chat_history[key] = list of {"text": str, "self": bool}
+        self.chat_history = {}
         self.selected_user = None
         self.selected_group = None
 
-        # ---- Layout ----
+        # typing indicator state
+        self._typing_after_id = None
+
         self._build_layout()
         self.show_login()
 
-        # ---- Main loop hooks ----
         self.root.after(100, self.process_ui_queue)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
 
-    # =================== LAYOUT ===================
+    # ============== LAYOUT ==============
     def _build_layout(self):
         self.container = ttk.Frame(self.root, padding=10)
         self.container.pack(fill=tk.BOTH, expand=True)
@@ -90,7 +97,6 @@ class ChatGUIApp:
         )
 
     def _build_main_frame_whatsapp_style(self):
-        # Top bar
         top = ttk.Frame(self.main_frame)
         top.pack(fill=tk.X)
 
@@ -100,16 +106,14 @@ class ChatGUIApp:
         ttk.Button(top, text="Join Group", command=self.show_join_group).pack(side=tk.RIGHT, padx=(8, 0))
         ttk.Button(top, text="Refresh", command=self.network.request_lists).pack(side=tk.RIGHT, padx=(8, 0))
 
-        # Main body: two columns
         body = ttk.Frame(self.main_frame)
         body.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
 
-        # ---- LEFT COLUMN: chats ----
+        # LEFT COLUMN
         left = ttk.Frame(body, width=260)
         left.pack(side=tk.LEFT, fill=tk.Y)
         left.pack_propagate(False)
 
-        # Users
         users_box = ttk.LabelFrame(left, text="Users")
         users_box.pack(fill=tk.BOTH, expand=True, padx=(0, 6), pady=(0, 6))
 
@@ -118,7 +122,6 @@ class ChatGUIApp:
         self.users_list.bind("<<ListboxSelect>>", self._on_user_select)
         self.users_list.bind("<Double-Button-1>", self.open_user_chat)
 
-        # Groups
         groups_box = ttk.LabelFrame(left, text="Groups")
         groups_box.pack(fill=tk.BOTH, expand=True, padx=(0, 6), pady=(0, 6))
 
@@ -127,16 +130,17 @@ class ChatGUIApp:
         self.groups_list.bind("<<ListboxSelect>>", self._on_group_select)
         self.groups_list.bind("<Double-Button-1>", self.open_group_chat)
 
-        # Left actions
         actions = ttk.Frame(left)
         actions.pack(fill=tk.X, pady=(4, 0))
 
         ttk.Button(actions, text="Open User", command=self.open_user_chat).pack(side=tk.LEFT)
-        ttk.Button(actions, text="Open Group", command=self.open_group_chat).pack(side=tk.LEFT, padx=(6, 0))
-        ttk.Button(actions, text="Leave Group", command=self.leave_selected_group).pack(side=tk.LEFT, padx=(6, 0))
-        ttk.Button(actions, text="Whois", command=self.whois_selected_user).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(actions, text="Open Group", command=self.open_group_chat).pack(side=tk.LEFT, padx=(4, 0))
+        ttk.Button(actions, text="View Members", command=self.view_group_members).pack(side=tk.LEFT, padx=(4, 0))
+        ttk.Button(actions, text="Add Member", command=self.add_member_to_group).pack(side=tk.LEFT, padx=(4, 0))
+        ttk.Button(actions, text="Leave Group", command=self.leave_selected_group).pack(side=tk.LEFT, padx=(4, 0))
+        ttk.Button(actions, text="Whois", command=self.whois_selected_user).pack(side=tk.LEFT, padx=(4, 0))
 
-        # ---- RIGHT COLUMN: conversation ----
+        # RIGHT COLUMN
         right = ttk.Frame(body)
         right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
@@ -146,7 +150,12 @@ class ChatGUIApp:
         self.chat_title = ttk.Label(header, text="No chat selected", font=("Arial", 13, "bold"))
         self.chat_title.pack(side=tk.LEFT)
 
+        self.typing_label = ttk.Label(header, text="", foreground="gray")
+        self.typing_label.pack(side=tk.RIGHT)
+
         self.chat_text = tk.Text(right, state=tk.DISABLED, wrap=tk.WORD)
+        self.chat_text.tag_configure("self", foreground="blue", justify="right")
+        self.chat_text.tag_configure("other", foreground="black", justify="left")
         self.chat_text.pack(fill=tk.BOTH, expand=True, pady=(6, 6))
 
         send = ttk.Frame(right)
@@ -166,7 +175,7 @@ class ChatGUIApp:
         card = ttk.Frame(self.join_group_frame, padding=20)
         card.place(relx=0.5, rely=0.5, anchor="center")
 
-        ttk.Label(card, text="Join Group", font=("Arial", 14, "bold")).pack(pady=(0, 10))
+        ttk.Label(card, text="Join / Create Group", font=("Arial", 14, "bold")).pack(pady=(0, 10))
 
         self.join_group_entry = ttk.Entry(card, width=30)
         self.join_group_entry.pack(pady=(0, 8))
@@ -174,7 +183,7 @@ class ChatGUIApp:
         ttk.Button(card, text="Join Group", command=self.join_group).pack(fill=tk.X, pady=(0, 6))
         ttk.Button(card, text="Back", command=self.show_main).pack(fill=tk.X)
 
-    # =================== NAVIGATION ===================
+    # ============== NAV / AUTH ==============
     def show_login(self):
         self.login_frame.tkraise()
 
@@ -185,7 +194,6 @@ class ChatGUIApp:
     def show_join_group(self):
         self.join_group_frame.tkraise()
 
-    # =================== AUTH ===================
     def login(self):
         self._auth("login")
 
@@ -193,18 +201,36 @@ class ChatGUIApp:
         self._auth("signup")
 
     def _auth(self, mode: str):
+        server_ip = self.server_entry.get().strip()
+        username = self.username_entry.get().strip()
+        password = self.password_entry.get().strip()
+
+        if not server_ip or not username or not password:
+            title = "Sign Up Error" if mode == "signup" else "Login Error"
+            messagebox.showwarning(title, "Server IP, username and password are required")
+            return
+
         try:
-            self.network.connect(
-                self.server_entry.get().strip(),
-                self.username_entry.get().strip(),
-                self.password_entry.get().strip(),
-            )
+            self.network.connect(server_ip, username, password)
+
             self.main_title.config(text=f"Main - {self.network.alias} ({mode})")
-            self.add_main_log(f"{mode.title()} successful")
+            label = "Sign up" if mode == "signup" else "Login"
+            self.add_main_log(f"{label} successful")
             self.show_main()
             self.schedule_refresh()
+
+        except RuntimeError as exc:
+            if mode == "signup":
+                messagebox.showerror(
+                    "Sign Up Error",
+                    "Username already exists with a different password, or the password is invalid.\n"
+                    "Use a new username to create an account, or use Login instead.",
+                )
+            else:
+                messagebox.showerror("Login Error", str(exc))
         except Exception as exc:
-            messagebox.showerror("Authentication Error", str(exc))
+            title = "Sign Up Error" if mode == "signup" else "Authentication Error"
+            messagebox.showerror(title, str(exc))
 
     def schedule_refresh(self):
         if not self.network.running:
@@ -212,13 +238,21 @@ class ChatGUIApp:
         self.network.request_lists()
         self.root.after(1200, self.schedule_refresh)
 
-    # =================== SELECTION HELPERS ===================
+    # ============== UDP HANDLER (TYPING) ==============
+    def _handle_udp(self, text: str):
+        self.uiq.put(("log", f"[UDP] {text}"))
+        stripped = text.strip()
+        if stripped.upper().startswith("TYPING "):
+            name = stripped.split(" ", 1)[1].strip()
+            if name and name != self.network.alias:
+                self.uiq.put(("typing", name))
+
+    # ============== SELECTION HELPERS ==============
     def _on_user_select(self, _evt=None):
         sel = self.users_list.curselection()
         if not sel:
             return
         self.selected_user = self.users_list.get(sel[0])
-        # Auto-open chat on selection
         self.open_user_chat()
 
     def _on_group_select(self, _evt=None):
@@ -226,22 +260,20 @@ class ChatGUIApp:
         if not sel:
             return
         self.selected_group = self.groups_list.get(sel[0])
-        # Auto-open chat on selection
         self.open_group_chat()
 
-    # =================== CHAT SELECTION ===================
+    # ============== CHAT OPEN ==============
     def open_user_chat(self, _evt=None):
-        # Prefer last selected user (works even if listbox selection is lost)
         if self.selected_user is None:
             sel = self.users_list.curselection()
             if not sel:
                 return
             self.selected_user = self.users_list.get(sel[0])
-
         target = self.selected_user
         self.current_chat_target = target
         self.current_chat_is_group = False
         self.chat_title.config(text=f"Private: {target}")
+        self.clear_typing()
         self.render_chat()
 
     def open_group_chat(self, _evt=None):
@@ -250,14 +282,14 @@ class ChatGUIApp:
             if not sel:
                 return
             self.selected_group = self.groups_list.get(sel[0])
-
         target = self.selected_group
         self.current_chat_target = target
         self.current_chat_is_group = True
         self.chat_title.config(text=f"Group: {target}")
+        self.clear_typing()
         self.render_chat()
 
-    # =================== GROUP / WHOIS ===================
+    # ============== GROUP ACTIONS ==============
     def join_group(self):
         name = self.join_group_entry.get().strip()
         if not name:
@@ -272,7 +304,6 @@ class ChatGUIApp:
             messagebox.showerror("Join Error", str(exc))
 
     def leave_selected_group(self):
-        # Use remembered group so it still works after clicking the button
         group = self.selected_group
         if not group:
             messagebox.showwarning("No group", "Select a group first")
@@ -282,6 +313,29 @@ class ChatGUIApp:
             self.add_main_log(f"Leave request sent: {group}")
         except Exception as exc:
             messagebox.showerror("Leave Error", str(exc))
+
+    def view_group_members(self):
+        group = self.selected_group
+        if not group:
+            messagebox.showwarning("No group", "Select a group first")
+            return
+        try:
+            self.network.list_group_members(group)
+        except Exception as exc:
+            messagebox.showerror("Members Error", str(exc))
+
+    def add_member_to_group(self):
+        group = self.selected_group
+        if not group:
+            messagebox.showwarning("No group", "Select a group first")
+            return
+        username = simpledialog.askstring("Add Member", "Username to add to group:")
+        if not username:
+            return
+        try:
+            self.network.add_user_to_group(username.strip(), group)
+        except Exception as exc:
+            messagebox.showerror("Add Member Error", str(exc))
 
     def whois_selected_user(self):
         user = self.selected_user
@@ -293,21 +347,19 @@ class ChatGUIApp:
         except Exception as exc:
             messagebox.showerror("Whois Error", str(exc))
 
-    # =================== SENDING ===================
+    # ============== SENDING ==============
     def send_chat(self):
         if not self.current_chat_target:
             messagebox.showwarning("No chat", "Select a user or group from the left pane")
             return
-
         text = self.chat_input.get().strip()
         if not text:
             return
-
         channel = "GROUP" if self.current_chat_is_group else "PRIVATE"
         try:
             self.network.send_chat(self.current_chat_target, text, channel)
             self.chat_input.delete(0, tk.END)
-            self.push_chat(self._chat_key(), f"You: {text}")
+            self._push_chat_line(self.current_chat_target, f"You: {text}", from_self=True)
         except Exception as exc:
             messagebox.showerror("Send Error", str(exc))
 
@@ -318,11 +370,9 @@ class ChatGUIApp:
         if self.current_chat_is_group:
             messagebox.showwarning("Not supported", "File transfer is only for private user chats")
             return
-
         path = filedialog.askopenfilename(title="Select file")
         if not path:
             return
-
         try:
             self.network.request_file(self.current_chat_target, path)
             self.add_main_log(
@@ -331,7 +381,7 @@ class ChatGUIApp:
         except Exception as exc:
             messagebox.showerror("File Error", str(exc))
 
-    # =================== BACKGROUND UPDATES ===================
+    # ============== QUEUE HANDLER ==============
     def process_ui_queue(self):
         while not self.uiq.empty():
             kind, data = self.uiq.get()
@@ -344,15 +394,19 @@ class ChatGUIApp:
                 self.joined_groups = data
                 self.refresh_lists()
 
+            elif kind == "group_members":
+                group, members = data
+                msg = "\n".join(members) if members else "(no members)"
+                messagebox.showinfo("Group Members", f"Group: {group}\n\n{msg}")
+
             elif kind == "message":
                 sender = data.get("from", "")
                 target = data.get("to", "")
                 body = data.get("body", "")
-                channel = data.get("channel", "PRIVATE")
+                channel = data.get("channel", "PRIVATE").upper()
 
-                # Conversation key: group name for groups; "other person" for private
-                if channel.upper() == "GROUP":
-                    key = target  # group name
+                if channel == "GROUP":
+                    key = target
                 else:
                     me = self.network.alias
                     if sender == me:
@@ -362,9 +416,15 @@ class ChatGUIApp:
                     else:
                         key = sender or target
 
-                line = f"{sender}: {body}"
-                self.push_chat(key, line)
+                from_self = sender == self.network.alias
+                line = f"{sender}: {body}" if not from_self else f"You: {body}"
+                self._push_chat_line(key, line, from_self=from_self)
                 self.add_main_log(f"New message from {sender}")
+
+            elif kind == "typing":
+                name = data
+                if (not self.current_chat_is_group) and self.current_chat_target == name:
+                    self.show_typing(name)
 
             elif kind == "whois":
                 messagebox.showinfo("Whois", data)
@@ -377,13 +437,12 @@ class ChatGUIApp:
 
         self.root.after(100, self.process_ui_queue)
 
-    # =================== UI HELPERS ===================
+    # ============== UI HELPERS ==============
     def refresh_lists(self):
         self.users_list.delete(0, tk.END)
         for user in self.online_users:
             if user != self.network.alias:
                 self.users_list.insert(tk.END, user)
-
         self.groups_list.delete(0, tk.END)
         for group in self.joined_groups:
             self.groups_list.insert(tk.END, group)
@@ -394,13 +453,10 @@ class ChatGUIApp:
         self.main_log.see(tk.END)
         self.main_log.config(state=tk.DISABLED)
 
-    def _chat_key(self):
-        return self.current_chat_target
-
-    def push_chat(self, chat_key: str, line: str):
+    def _push_chat_line(self, chat_key: str, text: str, from_self: bool):
         if not chat_key:
             return
-        self.chat_history.setdefault(chat_key, []).append(f"{ts()} {line}")
+        self.chat_history.setdefault(chat_key, []).append({"text": f"{ts()} {text}", "self": from_self})
         if self.current_chat_target == chat_key:
             self.render_chat()
 
@@ -408,10 +464,24 @@ class ChatGUIApp:
         self.chat_text.config(state=tk.NORMAL)
         self.chat_text.delete("1.0", tk.END)
         if self.current_chat_target:
-            for line in self.chat_history.get(self.current_chat_target, []):
-                self.chat_text.insert(tk.END, line + "\n")
+            for entry in self.chat_history.get(self.current_chat_target, []):
+                tag = "self" if entry["self"] else "other"
+                self.chat_text.insert(tk.END, entry["text"] + "\n", tag)
             self.chat_text.see(tk.END)
         self.chat_text.config(state=tk.DISABLED)
+
+    # typing indicator
+    def show_typing(self, name: str):
+        self.typing_label.config(text=f"{name} is typing…")
+        if self._typing_after_id is not None:
+            self.root.after_cancel(self._typing_after_id)
+        self._typing_after_id = self.root.after(1500, self.clear_typing)
+
+    def clear_typing(self):
+        self.typing_label.config(text="")
+        if self._typing_after_id is not None:
+            self.root.after_cancel(self._typing_after_id)
+            self._typing_after_id = None
 
     def close(self):
         self.network.close()
