@@ -27,6 +27,7 @@ class ClientNetwork:
         self.on_users: Optional[Callable[[list], None]] = None
         self.on_groups: Optional[Callable[[list], None]] = None
         self.on_group_members: Optional[Callable[[str, list], None]] = None
+        self.on_history: Optional[Callable[[str, list], None]] = None
         self.on_ack: Optional[Callable[[str], None]] = None
         self.on_error: Optional[Callable[[str], None]] = None
         self.on_message: Optional[Callable[[Dict[str, str]], None]] = None
@@ -117,6 +118,12 @@ class ClientNetwork:
 
     def add_user_to_group(self, username: str, group: str):
         self._send_ctrl("CMD ADD_TO_GROUP CCP/1.0", to_value=username, body=group)
+
+    def request_private_history(self, other: str):
+        self._send_ctrl("CMD HISTORY_PRIVATE CCP/1.0", to_value=other)
+
+    def request_group_history(self, group: str):
+        self._send_ctrl("CMD HISTORY_GROUP CCP/1.0", to_value=group)
 
     def whois(self, user: str):
         self._send_ctrl("CMD WHOIS CCP/1.0", to_value=user)
@@ -209,6 +216,27 @@ class ClientNetwork:
                             break
                     if self.on_group_members:
                         self.on_group_members(group, members)
+                    continue
+
+                if "CTRL HISTORY CCP/1.0" in msg:
+                    body = self._extract_body(msg)
+                    lines = [l for l in body.splitlines() if l.strip()]
+                    entries = []
+                    for line in lines:
+                        parts = line.split("\t", 4)
+                        if len(parts) == 5:
+                            ts_val, sender, channel, target, text = parts
+                            entries.append(
+                                {
+                                    "ts": ts_val,
+                                    "sender": sender,
+                                    "channel": channel,
+                                    "target": target,
+                                    "body": text,
+                                }
+                            )
+                    if self.on_history:
+                        self.on_history(self.alias, entries)
                     continue
 
                 if "CTRL ACK CCP/1.0" in msg:

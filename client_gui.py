@@ -22,13 +22,11 @@ class ChatGUIApp:
         self.network.on_group_members = (
             lambda group, members: self.uiq.put(("group_members", (group, members)))
         )
+        self.network.on_history = lambda _me, entries: self.uiq.put(("history", entries))
         self.network.on_ack = lambda text: self.uiq.put(("log", text))
         self.network.on_error = lambda text: self.uiq.put(("error", text))
         self.network.on_whois = lambda text: self.uiq.put(("whois", text))
-
-        # UDP handler for typing + log
         self.network.on_udp = self._handle_udp
-
         self.network.on_file_request = (
             lambda sender, name: self.uiq.put(("log", f"Incoming file request from {sender}: {name}"))
         )
@@ -40,7 +38,7 @@ class ChatGUIApp:
         self.joined_groups = []
         self.current_chat_target = None
         self.current_chat_is_group = False
-        # chat_history[key] = list of {"text": str, "self": bool}
+        # chat_history[key] = list of {"ts", "text", "self"}
         self.chat_history = {}
         self.selected_user = None
         self.selected_group = None
@@ -274,6 +272,14 @@ class ChatGUIApp:
         self.current_chat_is_group = False
         self.chat_title.config(text=f"Private: {target}")
         self.clear_typing()
+
+        # reset and load history
+        self.chat_history[target] = []
+        try:
+            self.network.request_private_history(target)
+        except Exception as exc:
+            messagebox.showerror("History Error", str(exc))
+
         self.render_chat()
 
     def open_group_chat(self, _evt=None):
@@ -287,6 +293,13 @@ class ChatGUIApp:
         self.current_chat_is_group = True
         self.chat_title.config(text=f"Group: {target}")
         self.clear_typing()
+
+        self.chat_history[target] = []
+        try:
+            self.network.request_group_history(target)
+        except Exception as exc:
+            messagebox.showerror("History Error", str(exc))
+
         self.render_chat()
 
     # ============== GROUP ACTIONS ==============
@@ -399,6 +412,32 @@ class ChatGUIApp:
                 msg = "\n".join(members) if members else "(no members)"
                 messagebox.showinfo("Group Members", f"Group: {group}\n\n{msg}")
 
+            elif kind == "history":
+                entries = data
+                for e in entries:
+                    chan = e["channel"].upper()
+                    sender = e["sender"]
+                    target = e["target"]
+                    body = e["body"]
+                    ts_val = e["ts"]
+
+                    if chan == "GROUP":
+                        key = target
+                    else:
+                        me = self.network.alias
+                        if sender == me:
+                            key = target
+                        elif target == me:
+                            key = sender
+                        else:
+                            key = sender or target
+
+                    from_self = sender == self.network.alias
+                    line = f"{sender}: {body}" if not from_self else f"You: {body}"
+                    self._push_chat_line_from_ts(key, line, from_self, ts_val)
+
+                self.render_chat()
+
             elif kind == "message":
                 sender = data.get("from", "")
                 target = data.get("to", "")
@@ -454,20 +493,53 @@ class ChatGUIApp:
         self.main_log.config(state=tk.DISABLED)
 
     def _push_chat_line(self, chat_key: str, text: str, from_self: bool):
+        # store with current timestamp
+        self._push_chat_line_from_ts(chat_key, text, from_self, datetime.now().isoformat())
+
+    def _push_chat_line_from_ts(self, chat_key: str, text: str, from_self: bool, ts_val: str):
         if not chat_key:
             return
-        self.chat_history.setdefault(chat_key, []).append({"text": f"{ts()} {text}", "self": from_self})
+        self.chat_history.setdefault(chat_key, []).append(
+            {"ts": ts_val, "text": text, "self": from_self}
+        )
         if self.current_chat_target == chat_key:
             self.render_chat()
 
     def render_chat(self):
         self.chat_text.config(state=tk.NORMAL)
         self.chat_text.delete("1.0", tk.END)
+
         if self.current_chat_target:
+            last_date = None
+            today_str = datetime.now().date().isoformat()
+
             for entry in self.chat_history.get(self.current_chat_target, []):
+                ts_val = entry.get("ts", "")
+                try:
+                    date_str = ts_val.split("T", 1)[0]
+                except Exception:
+                    date_str = ""
+
+                # Date separator
+                if date_str and date_str != last_date:
+                    label = "Today" if date_str == today_str else date_str
+                    self.chat_text.insert(tk.END, f"--- {label} ---\n", "other")
+                    last_date = date_str
+
                 tag = "self" if entry["self"] else "other"
-                self.chat_text.insert(tk.END, entry["text"] + "\n", tag)
+
+                time_part = ""
+                if ts_val and "T" in ts_val:
+                    time_part = ts_val.split("T", 1)[1][:5]
+
+                line = entry["text"]
+                if time_part:
+                    line = f"{line}  {time_part}"
+
+                self.chat_text.insert(tk.END, line + "\n", tag)
+
             self.chat_text.see(tk.END)
+
         self.chat_text.config(state=tk.DISABLED)
 
     # typing indicator
