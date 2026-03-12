@@ -56,3 +56,9 @@ def get_user_info(username):
         cur.execute('SELECT group_name FROM group_members WHERE username=?', (username,))
         groups = [g[0] for g in cur.fetchall()]
         return user, groups
+
+def get_group_memberships(username):
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute('SELECT group_name FROM group_members WHERE username=? ORDER BY group_name', (username,))
+        return [g[0] for g in cur.fetchall()]
