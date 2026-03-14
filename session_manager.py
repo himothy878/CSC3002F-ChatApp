@@ -3,26 +3,33 @@ import threading
 
 class SessionManager:
     def __init__(self):
-        self.active_users = {}      # username → socket
-        self.groups = {}            # group_name → set(usernames)
+        self.active_users = {}      # username -> (socket, udp_port, p2p_port)
+        self.groups = {}            # group_name -> set(usernames)
         self.lock = threading.Lock()
 
-    def add_user(self, username, socket):
+    def add_user(self, username, sock, udp_port=None, p2p_port=None):
         with self.lock:
-            self.active_users[username] = socket
+            self.active_users[username] = (sock, udp_port, p2p_port)
 
     def remove_user(self, username):
         with self.lock:
-            if username in self.active_users:
-                del self.active_users[username]
+            self.active_users.pop(username, None)
 
-    def get_user_socket(self, username):
+    def get_user(self, username):
         with self.lock:
             return self.active_users.get(username)
 
     def list_users(self):
         with self.lock:
             return list(self.active_users.keys())
+
+    def is_online(self, username):
+        with self.lock:
+            return username in self.active_users
+
+    def get_all_users_safe(self):
+        with self.lock:
+            return list(self.active_users.items())
 
     def create_group(self, group_name):
         with self.lock:
