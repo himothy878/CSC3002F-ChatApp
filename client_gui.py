@@ -101,8 +101,16 @@ class ChatGUIApp:
         self.main_title = ttk.Label(top, text="Main", font=("Arial", 14, "bold"))
         self.main_title.pack(side=tk.LEFT)
 
-        ttk.Button(top, text="Join Group", command=self.show_join_group).pack(side=tk.RIGHT, padx=(8, 0))
-        ttk.Button(top, text="Refresh", command=self.network.request_lists).pack(side=tk.RIGHT, padx=(8, 0))
+        # Right side: Refresh, Join Group, Leave Group
+        ttk.Button(top, text="Refresh", command=self.network.request_lists).pack(
+            side=tk.RIGHT, padx=(8, 0)
+        )
+        ttk.Button(top, text="Leave Group", command=self.leave_selected_group).pack(
+            side=tk.RIGHT, padx=(8, 0)
+        )
+        ttk.Button(top, text="Join Group", command=self.show_join_group).pack(
+            side=tk.RIGHT, padx=(8, 0)
+        )
 
         body = ttk.Frame(self.main_frame)
         body.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
@@ -128,15 +136,23 @@ class ChatGUIApp:
         self.groups_list.bind("<<ListboxSelect>>", self._on_group_select)
         self.groups_list.bind("<Double-Button-1>", self.open_group_chat)
 
+        # Actions row under Groups (no Leave here now)
         actions = ttk.Frame(left)
         actions.pack(fill=tk.X, pady=(4, 0))
 
         ttk.Button(actions, text="Open User", command=self.open_user_chat).pack(side=tk.LEFT)
-        ttk.Button(actions, text="Open Group", command=self.open_group_chat).pack(side=tk.LEFT, padx=(4, 0))
-        ttk.Button(actions, text="View Members", command=self.view_group_members).pack(side=tk.LEFT, padx=(4, 0))
-        ttk.Button(actions, text="Add Member", command=self.add_member_to_group).pack(side=tk.LEFT, padx=(4, 0))
-        ttk.Button(actions, text="Leave Group", command=self.leave_selected_group).pack(side=tk.LEFT, padx=(4, 0))
-        ttk.Button(actions, text="Whois", command=self.whois_selected_user).pack(side=tk.LEFT, padx=(4, 0))
+        ttk.Button(actions, text="Open Group", command=self.open_group_chat).pack(
+            side=tk.LEFT, padx=(4, 0)
+        )
+        ttk.Button(actions, text="View Members", command=self.view_group_members).pack(
+            side=tk.LEFT, padx=(4, 0)
+        )
+        ttk.Button(actions, text="Add Member", command=self.add_member_to_group).pack(
+            side=tk.LEFT, padx=(4, 0)
+        )
+        ttk.Button(actions, text="Whois", command=self.whois_selected_user).pack(
+            side=tk.LEFT, padx=(4, 0)
+        )
 
         # RIGHT COLUMN
         right = ttk.Frame(body)
@@ -173,12 +189,16 @@ class ChatGUIApp:
         card = ttk.Frame(self.join_group_frame, padding=20)
         card.place(relx=0.5, rely=0.5, anchor="center")
 
-        ttk.Label(card, text="Join / Create Group", font=("Arial", 14, "bold")).pack(pady=(0, 10))
+        ttk.Label(card, text="Join / Create Group", font=("Arial", 14, "bold")).pack(
+            pady=(0, 10)
+        )
 
         self.join_group_entry = ttk.Entry(card, width=30)
         self.join_group_entry.pack(pady=(0, 8))
 
-        ttk.Button(card, text="Join Group", command=self.join_group).pack(fill=tk.X, pady=(0, 6))
+        ttk.Button(card, text="Join Group", command=self.join_group).pack(
+            fill=tk.X, pady=(0, 6)
+        )
         ttk.Button(card, text="Back", command=self.show_main).pack(fill=tk.X)
 
     # ============== NAV / AUTH ==============
@@ -493,7 +513,6 @@ class ChatGUIApp:
         self.main_log.config(state=tk.DISABLED)
 
     def _push_chat_line(self, chat_key: str, text: str, from_self: bool):
-        # store with current timestamp
         self._push_chat_line_from_ts(chat_key, text, from_self, datetime.now().isoformat())
 
     def _push_chat_line_from_ts(self, chat_key: str, text: str, from_self: bool, ts_val: str):
@@ -520,7 +539,6 @@ class ChatGUIApp:
                 except Exception:
                     date_str = ""
 
-                # Date separator
                 if date_str and date_str != last_date:
                     label = "Today" if date_str == today_str else date_str
                     self.chat_text.insert(tk.END, f"--- {label} ---\n", "other")
@@ -564,3 +582,6 @@ if __name__ == "__main__":
     root = tk.Tk()
     ChatGUIApp(root)
     root.mainloop()
+
+
+
